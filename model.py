@@ -109,10 +109,10 @@ class DECBDR2d(nn.Module):
 
         if not norm is None:
             layer += [nn.BatchNorm2d(out_channel) if norm == 'bnorm' else nn.InstanceNorm2d(out_channel)]
-        if not drop is None:
-            layer += [nn.Dropout2d(drop)]
         if not relu is None:
             layer += [nn.ReLU() if relu == 0 else nn.LeakyReLU(relu)]
+        if not drop is None:
+            layer += [nn.Dropout2d(drop)]
 
         self.decbdr = nn.Sequential(*layer)
 
