@@ -146,6 +146,7 @@ for epoch in range(1, num_epochs + 1):
                 output = np.clip(output, a_min=0, a_max=1)
 
                 writer_train.add_image('output', output, (int(batch/1000) + (epoch*10)), dataformats='NHWC')
+            netG.train()
 
     writer_train.add_scalar('loss_G_l1', mean(loss_G_L1_train), epoch)
     writer_train.add_scalar('loss_G_gan', mean(loss_G_gan_train), epoch)
