@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.utils.data
 from torch.utils.tensorboard import SummaryWriter
-from utils import init_weights
+from utils import init_weights, set_requires_grad
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from statistics import mean
@@ -18,15 +18,21 @@ from data_loader import Dataset, RandomCrop, Resize, Normalization
 
 parser = argparse.ArgumentParser(description='Train Pix2Pix')
 parser.add_argument('--crop_size', default=256, type=int, help='training images crop size')
-parser.add_argument('--num_epochs', default=200, type=int, help='training epoch number')
+parser.add_argument('--num_epochs', default=100, type=int, help='training epoch number')
 parser.add_argument('--scale_factor', default=2, type=int, help='Pix2Pix scale factor')
 parser.add_argument('--opts', nargs='+', default=['direction'])
-parser.add_argument('--batch_size', default=16, type=int, help='map data batch size')
+parser.add_argument('--batch_size', default=64, type=int, help='map data batch size')
 parser.add_argument('--data_dir', default='./edges2shoes/train/', type=str, help='data dir')
 
 opt = parser.parse_args()
 
+os.environ["CUDA_VISIBLE_DEVICES"]="1,2,3"
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+print('Device:', device)
+print('Current cuda device:', torch.cuda.current_device())
+print('Count of using GPUs:', torch.cuda.device_count())
 
 # hyper parameters
 crop_size = opt.crop_size
@@ -51,14 +57,17 @@ if not os.path.exists(out_path):
 netG = Generator().to(device)
 netD = Discriminator(opt.scale_factor).to(device)
 
+netG = nn.DataParallel(netG).to(device)
+netD = nn.DataParallel(netD).to(device)
+
 init_weights(netG)
 init_weights(netD)
 
 fn_loss = nn.BCELoss().to(device) # binary cross entropy
 l1_loss = nn.L1Loss().to(device)
 
-optimizerG = optim.Adam(netG.parameters(), lr=0.0002, betas=(0.5, 0.999))
-optimizerD = optim.Adam(netD.parameters(), lr=0.0002, betas=(0.5, 0.999))
+optimizerG = optim.Adam(netG.parameters(), lr=0.0003, betas=(0.5, 0.999))
+optimizerD = optim.Adam(netD.parameters(), lr=0.0003, betas=(0.5, 0.999))
 
 fn_tonumpy = lambda x: x.to('cpu').detach().numpy().transpose(0, 2, 3, 1)
 fn_denorm = lambda x, mean, std: (x * std) + mean
@@ -68,6 +77,12 @@ if not os.path.exists(dir_log_train):
     os.makedirs(dir_log_train)
 
 writer_train = SummaryWriter(log_dir=dir_log_train)
+
+img = plt.imread('./input/input.jpg')[:, :, :3]
+img = {'label': img[:, 256:, :], 'input': img[:, :256, :]}
+
+writer_train.add_image('input', img['input'], 1, dataformats='NHWC')
+writer_train.add_image('label', img['label'], 1, dataformats='NHWC')
 
 for epoch in range(1, num_epochs + 1):
     netG.train()
@@ -84,23 +99,24 @@ for epoch in range(1, num_epochs + 1):
 
         output = netG(input)
 
+        set_requires_grad(netD, True)
         optimizerD.zero_grad()
 
-        fake = torch.cat((input, output), 1)
         real = torch.cat((input, label), 1)
+        fake = torch.cat((input, output), 1)
 
-        pred_fake = netD(fake.detach())
         pred_real = netD(real)
+        pred_fake = netD(fake.detach())
 
-        loss_D_fake = fn_loss(pred_fake, torch.zeros_like(pred_fake))
         loss_D_real = fn_loss(pred_real, torch.ones_like(pred_real))
+        loss_D_fake = fn_loss(pred_fake, torch.zeros_like(pred_fake))
 
-        loss_D = 0.5 * (loss_D_real + loss_D_fake)
+        loss_D = (loss_D_real + loss_D_fake) * 0.5
 
         loss_D.backward()
-
         optimizerD.step()
 
+        set_requires_grad(netD, False)
         optimizerG.zero_grad()
 
         fake = torch.cat((input, output), 1)
@@ -120,29 +136,28 @@ for epoch in range(1, num_epochs + 1):
 
         print("train: epoch %04d / %04d | batch: %04d / %04d | GAN gan %.4f | GAN L1 %.4f | DISC REAL: %.4f | DISC REAL: %.4f"
               % (num_epochs, epoch, num_batch_train, batch, np.mean(loss_G_gan_train), np.mean(loss_G_L1_train), np.mean(loss_D_real_train), np.mean(loss_D_fake_train)))
+        
+        if batch % 1000 == 0:
+            with torch.no_grad():
+                netG.eval()
+                output = netG(img.to(device))
+
+                output = fn_tonumpy(fn_denorm(output, mean=0.5, std=0.5)).squeeze()
+                output = np.clip(output, a_min=0, a_max=1)
+
+                writer_train.add_image('output', output, (int(batch/1000) + (epoch*10)), dataformats='NHWC')
 
     writer_train.add_scalar('loss_G_l1', mean(loss_G_L1_train), epoch)
     writer_train.add_scalar('loss_G_gan', mean(loss_G_gan_train), epoch)
     writer_train.add_scalar('loss_D_fake', mean(loss_D_fake_train), epoch)
     writer_train.add_scalar('loss_D_real', mean(loss_D_real_train), epoch)
 
-    input = fn_tonumpy(fn_denorm(input, mean=0.5, std=0.5)).squeeze()
-    label = fn_tonumpy(fn_denorm(label, mean=0.5, std=0.5)).squeeze()
-    output = fn_tonumpy(fn_denorm(output, mean=0.5, std=0.5)).squeeze()
-
-    input = np.clip(input, a_min=0, a_max=1)
-    label = np.clip(label, a_min=0, a_max=1)
-    output = np.clip(output, a_min=0, a_max=1)
-
-    plt.imsave(os.path.join(out_path, '%04d_input.png' % epoch), input[0], cmap=None)
-    plt.imsave(os.path.join(out_path, '%04d_label.png' % epoch), label[0], cmap=None)
-    plt.imsave(os.path.join(out_path, '%04d_output.png' % epoch), output[0], cmap=None)
-
     netG.eval()
-    torch.save(netG.state_dict(), 'epochs/netG_epoch_%d_%d.pth' % (2, epoch))
-    torch.save(netD.state_dict(), 'epochs/netD_epoch_%d_%d.pth' % (2, epoch))
+    if epoch % 10 == 0:
+        torch.save(netG.state_dict(), 'epochs/netG_epoch_%d_%d.pth' % (4, epoch))
 
 
+# start 5/3 화 10:01
 
 
 
