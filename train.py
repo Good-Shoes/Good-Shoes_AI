@@ -12,6 +12,7 @@ from utils import init_weights, set_requires_grad
 from torch.utils.data import DataLoader
 from torchvision import transforms
 from statistics import mean
+from PIL import Image
 
 from model import Generator, Discriminator
 from data_loader import Dataset, RandomCrop, Resize, Normalization
@@ -21,7 +22,7 @@ parser.add_argument('--crop_size', default=256, type=int, help='training images 
 parser.add_argument('--num_epochs', default=100, type=int, help='training epoch number')
 parser.add_argument('--scale_factor', default=2, type=int, help='Pix2Pix scale factor')
 parser.add_argument('--opts', nargs='+', default=['direction'])
-parser.add_argument('--batch_size', default=64, type=int, help='map data batch size')
+parser.add_argument('--batch_size', default=128, type=int, help='map data batch size')
 parser.add_argument('--data_dir', default='./edges2shoes/train/', type=str, help='data dir')
 
 opt = parser.parse_args()
@@ -46,7 +47,7 @@ transform_train = transforms.Compose([
 
 # data loading
 train_set = Dataset(opt.data_dir, transform=transform_train)
-train_loader = DataLoader(dataset=train_set, num_workers=0, batch_size=opt.batch_size, shuffle=True, drop_last=True)
+train_loader = DataLoader(dataset=train_set, num_workers=8, batch_size=opt.batch_size, shuffle=True, drop_last=True)
 
 num_batch_train = int((train_set.__len__() / opt.batch_size) + ((train_set.__len__() / opt.batch_size) != 0))
 
@@ -78,11 +79,9 @@ if not os.path.exists(dir_log_train):
 
 writer_train = SummaryWriter(log_dir=dir_log_train)
 
-img = plt.imread('./input/input.jpg')[:, :, :3]
-img = {'label': img[:, 256:, :], 'input': img[:, :256, :]}
-
-writer_train.add_image('input', img['input'], 1, dataformats='NHWC')
-writer_train.add_image('label', img['label'], 1, dataformats='NHWC')
+image = Image.open('./input/input.jpg')
+image = transforms.ToTensor()(image)
+image = torch.unsqueeze(image[:, :, 256:], 0)
 
 for epoch in range(1, num_epochs + 1):
     netG.train()
@@ -140,12 +139,12 @@ for epoch in range(1, num_epochs + 1):
         if batch % 1000 == 0:
             with torch.no_grad():
                 netG.eval()
-                output = netG(img.to(device))
-
+                output = netG(image)
+                output = fn_tonumpy(fn_denorm(output, mean=0.5, std=0.5)).squeeze()
                 output = fn_tonumpy(fn_denorm(output, mean=0.5, std=0.5)).squeeze()
                 output = np.clip(output, a_min=0, a_max=1)
 
-                writer_train.add_image('output', output, (int(batch/1000) + (epoch*10)), dataformats='NHWC')
+                writer_train.add_image('output', output, (int(batch/1000) + (epoch*10)), dataformats='HWC')
             netG.train()
 
     writer_train.add_scalar('loss_G_l1', mean(loss_G_L1_train), epoch)
@@ -155,7 +154,7 @@ for epoch in range(1, num_epochs + 1):
 
     netG.eval()
     if epoch % 10 == 0:
-        torch.save(netG.state_dict(), 'epochs/netG_epoch_%d_%d.pth' % (4, epoch))
+        torch.save(netG.state_dict(), 'epochs/netG_epoch_%d_%d.pth' % (3, epoch))
 
 
 # start 5/3 화 10:01
